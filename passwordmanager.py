@@ -5,8 +5,9 @@ import secrets
 import customtkinter
 import keyring
 import json
-import sqlcipher3
-
+import sqlite3
+import bcrypt
+from tkinter import ttk
 
 current_user_key = None
 current_username = None
@@ -20,19 +21,23 @@ app.title("Password Manager")
 
 def show_frame(frame):
     frame.tkraise()
+    if frame == display_passwords_frame:
+        display_passwords()
 
-def create_connection(db_password):
+def create_connection():
     try:
-        conn = sqlcipher3.connect('password_manager_encrypted.db')
-        conn.execute(f"PRAGMA key='{db_password}'")
+        conn = sqlite3.connect('password_manager.db')
+        print("connection")
         return conn
-    except sqlcipher3.DatabaseError as e:
+    except sqlite3.DatabaseError as e:
         print(f"Error creating connection: {e}")
         return None
-
+    except Exception as ex:
+        print(f"Unexpected error creating connection: {ex}")
+        return None
 
 def create_tables():
-    conn = create_connection('default-password')
+    conn = create_connection()
     if conn is not None:
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -42,14 +47,15 @@ def create_tables():
                      username TEXT NOT NULL,
                      category TEXT NOT NULL,
                      service TEXT NOT NULL,
+                     service_username TEXT NOT NULL,
                      password TEXT NOT NULL,
                      FOREIGN KEY (username) REFERENCES users (username))''')
         conn.commit()
+        print("table created successfully")
         conn.close()
     else:
         print("Error: Unable to create tables")
 create_tables()
-
 
 container = customtkinter.CTkFrame(app)
 container.pack(fill="both", expand=True)
@@ -60,9 +66,8 @@ choice_frame = customtkinter.CTkFrame(container)
 display_passwords_frame=customtkinter.CTkFrame(container)
 add_password_frame=customtkinter.CTkFrame(container)
 
-for frame in (signup_frame, login_frame, choice_frame,display_passwords_frame,add_password_frame):
+for frame in (signup_frame, login_frame, choice_frame, display_passwords_frame, add_password_frame):
     frame.grid(row=0, column=0, sticky='nsew')
-
 
 container.grid_rowconfigure(0, weight=1)
 container.grid_columnconfigure(0, weight=1)
@@ -90,7 +95,6 @@ signup_frame.grid_columnconfigure(2, weight=1)
 signup_title = customtkinter.CTkLabel(signup_frame, text="Password Manager", font=("Arial", 35, 'bold'))
 signup_title.grid(row=0, column=1, padx=20, pady=20)
 
-
 sign_up_text = customtkinter.CTkLabel(signup_frame, text="Sign Up", font=("Arial", 30, 'bold'))
 sign_up_text.grid(row=1, column=1, padx=20, pady=10)
 
@@ -109,10 +113,16 @@ confirm_password_entry_signup.grid(row=4, column=1, padx=20, pady=10, sticky='w'
 confirm_password_label_signup = customtkinter.CTkLabel(signup_frame, text="Confirm Password", font=("Arial", 20))
 confirm_password_label_signup.grid(row=4, column=0, padx=20, pady=10, sticky='e')
 
-
 signup_message = customtkinter.CTkLabel(signup_frame, text="", font=("Arial", 20))
 signup_message.grid(row=5, column=1, padx=20, pady=10)
 
+def hash_password(password):
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed_password
+
+def verify_password(stored_password, provided_password):
+    return bcrypt.checkpw(provided_password.encode('utf-8'), stored_password)
 
 def store_passwords(username, passwords_dict):
     passwords_json = json.dumps(passwords_dict)
@@ -126,7 +136,7 @@ def retrieve_passwords(username):
     return passwords_dict
 
 def signup():
-    global current_user_key, current_user_id
+    global current_user_key, current_username
     username = username_entry_signup.get()
     password = password_entry_signup.get()
     confirm_password = confirm_password_entry_signup.get()
@@ -135,37 +145,29 @@ def signup():
         signup_message.configure(text="Passwords do not match!", text_color="red")
         return
 
-    passwords = retrieve_passwords(username)
-    passwords['default'] = password
-    store_passwords(username, passwords)
+    hashed_password = hash_password(password)
     
-    conn = create_connection(password)  
+    conn = create_connection()
     c = conn.cursor()
     
     try:
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
         conn.commit()
-        current_user_key = password  
-        current_username = username  
+        current_username = username
         signup_message.configure(text="Signup successful!", text_color="green")
         show_frame(choice_frame)
-    except sqlcipher3.IntegrityError:
+    except sqlite3.IntegrityError:
         signup_message.configure(text="Username already exists!", text_color="red")
-    
-    conn.close()
+    finally:
+        conn.close()
 
-    show_frame(login_frame)
-
-
-sign_up_button = customtkinter.CTkButton(signup_frame, text="Sign Up", font=("Arial", 20), width=200, height=40, command=signup)
-sign_up_button.grid(row=6, column=1, padx=20, pady=20)
-
+signup_button = customtkinter.CTkButton(signup_frame, text="Sign Up", font=("Arial", 20), width=200, height=40, command=signup)
+signup_button.grid(row=6, column=1, padx=20, pady=20)
 
 for i in range(7):
     login_frame.grid_rowconfigure(i, weight=1)
 login_frame.grid_columnconfigure(0, weight=1)
 login_frame.grid_columnconfigure(2, weight=1)
-
 
 login_title = customtkinter.CTkLabel(login_frame, text="Password Manager", font=("Arial", 35, 'bold'))
 login_title.grid(row=0, column=1, padx=20, pady=20)
@@ -191,105 +193,128 @@ def login():
     username = username_entry_login.get()
     password = password_entry_login.get()
     
-    passwords = retrieve_passwords(username)
-    current_user_key=passwords
-    current_username=username
-    if not passwords:
-        login_message.configure(text="Username not found!", text_color="red")
-    elif passwords.get('default') == password:
-        show_passwords()
+    conn = create_connection()
+    c = conn.cursor()
+    
+    c.execute("SELECT password FROM users WHERE username=?", (username,))
+    row = c.fetchone()
+    
+    if row is None:
+        login_message.configure(text="Invalid username or password", text_color="red")
     else:
-        login_message.configure(text="Incorrect password!", text_color="red")
-
+        stored_password = row[0]
+        if verify_password(stored_password, password):
+            current_username = username
+            login_message.configure(text="Login successful!", text_color="green")
+            show_frame(display_passwords_frame)
+        else:
+            login_message.configure(text="Invalid username or password", text_color="red")
+    
+    conn.close()
 
 login_button = customtkinter.CTkButton(login_frame, text="Login", font=("Arial", 20), width=200, height=40, command=login)
 login_button.grid(row=6, column=1, padx=20, pady=20)
 
-show_frame(choice_frame)
-def show_passwords():
-    global current_user_key, current_username
-    for widget in display_passwords_frame.winfo_children():
-        widget.destroy()
+display_passwords_frame.grid_rowconfigure(0, weight=1)
+display_passwords_frame.grid_rowconfigure(1, weight=1)
+display_passwords_frame.grid_rowconfigure(2, weight=1)
+display_passwords_frame.grid_columnconfigure(0, weight=1)
 
-    title_label = customtkinter.CTkLabel(display_passwords_frame, text="Stored Passwords", font=("Arial", 30, 'bold'))
-    title_label.grid(row=0, column=0, padx=20, pady=20)
-    add_button=customtkinter.CTkButton(display_passwords_frame,text="Add",font=("Arial",20),width=200,height=40,command=lambda: show_frame(add_password_frame))
-    add_button.grid(row=0, column=2,padx=20,pady=20)
- 
-    try:
-        
-        conn = create_connection(current_user_key)
-        c = conn.cursor()
-        c.execute("SELECT category, service, password FROM passwords WHERE username=?", (current_username,))
-        passwords = c.fetchall()
-        conn.close()
+display_passwords_title = customtkinter.CTkLabel(display_passwords_frame, text="Password Manager", font=("Arial", 35, 'bold'))
+display_passwords_title.grid(row=0, column=0, padx=20, pady=20, sticky='n')
 
-        if passwords:
-            passwords_dict1 = {f"{category} - {service}": pwd for category, service, pwd in passwords}
-            row_index = 1
-            for key, value in passwords_dict1.items():
-                password_label = customtkinter.CTkLabel(display_passwords_frame, text=f"{key}: {value}", font=("Arial", 20))
-                password_label.grid(row=row_index, column=0, padx=20, pady=10)
-                row_index += 1
-        else:
-            print("error")
-    except Exception as e:
-        print(f"Error retrieving passwords: {str(e)}")
-    
-    show_frame(display_passwords_frame)
-def generator():
-    letters = string.ascii_letters
-    digits = string.digits
-    special_chars = string.punctuation
-    selection_list = letters + digits + special_chars
-    password_len = 17
-    password = ''
-    for i in range(password_len):
-        password+=''.join(secrets.choice(selection_list))
-    addpassword_entry_signup.delete(0, tkinter.END)
-    addpassword_entry_signup.insert(0,password)
-service_entry_signup = customtkinter.CTkEntry(add_password_frame, width=300, height=35, font=("Arial", 18))
-service_entry_signup.grid(row=2, column=1, padx=20, pady=10, sticky='w')
-service_label_signup = customtkinter.CTkLabel(add_password_frame, text="Service name", font=("Arial", 20))
-service_label_signup.grid(row=2, column=0, padx=20, pady=10, sticky='e')
+display_passwords_text = customtkinter.CTkLabel(display_passwords_frame, text="Your Passwords", font=("Arial", 30, 'bold'))
+display_passwords_text.grid(row=1, column=0, padx=20, pady=10, sticky='n')
+add_button=customtkinter.CTkButton(display_passwords_frame,text="Add",font=("Arial",20),width=200,height=40,command=lambda: show_frame(add_password_frame))
+add_button.grid(row=0, column=2,padx=20,pady=20)
 
-addpassword_entry_signup = customtkinter.CTkEntry(add_password_frame, width=300, height=35, font=("Arial", 18))
-addpassword_entry_signup.grid(row=3, column=1, padx=20, pady=10, sticky='w')
-addpassword_label_signup = customtkinter.CTkLabel(add_password_frame, text="Password", font=("Arial", 20))
-addpassword_label_signup.grid(row=3, column=0, padx=20, pady=10, sticky='e')
-generator_button=customtkinter.CTkButton(add_password_frame,text="generate",font=("Arial",18),command=generator)
-generator_button.grid(row=3,column=2,padx=20,pady=20)
+columns = ("Service", "Username", "Password")
+password_tree = ttk.Treeview(display_passwords_frame, columns=columns, show="headings", height=15)
+password_tree.heading("Service", text="Service")
+password_tree.heading("Username", text="Username")
+password_tree.heading("Password", text="Password")
 
-category_entry_signup = customtkinter.CTkEntry(add_password_frame, width=300, height=35, font=("Arial", 18))
-category_entry_signup.grid(row=4, column=1, padx=20, pady=10, sticky='w')
-category_label_signup = customtkinter.CTkLabel(add_password_frame, text="Category", font=("Arial", 20))
-category_label_signup.grid(row=4, column=0, padx=20, pady=10, sticky='e')
+password_tree.column("Service", width=200, anchor='center')
+password_tree.column("Username", width=200, anchor='center')
+password_tree.column("Password", width=200, anchor='center')
+
+password_tree.grid(row=2, column=0, padx=20, pady=10, sticky='n')
+
+scrollbar = ttk.Scrollbar(display_passwords_frame, orient="vertical", command=password_tree.yview)
+scrollbar.grid(row=2, column=1, sticky='ns')
+password_tree.configure(yscrollcommand=scrollbar.set)
+
+def display_passwords():
+    for i in password_tree.get_children():
+        password_tree.delete(i)
+    passwords_dict = retrieve_passwords(current_username)
+    for service, details in passwords_dict.items():
+        password_tree.insert("", "end", values=(service, details['username'], details['password']))
+
+add_password_frame.grid_rowconfigure(0, weight=1)
+add_password_frame.grid_rowconfigure(1, weight=1)
+add_password_frame.grid_rowconfigure(2, weight=1)
+add_password_frame.grid_rowconfigure(3, weight=1)
+add_password_frame.grid_rowconfigure(4, weight=1)
+add_password_frame.grid_rowconfigure(5, weight=1)
+add_password_frame.grid_rowconfigure(6, weight=1)
+add_password_frame.grid_rowconfigure(7, weight=1)
+add_password_frame.grid_columnconfigure(0, weight=1)
+add_password_frame.grid_columnconfigure(2, weight=1)
+
+add_password_title = customtkinter.CTkLabel(add_password_frame, text="Password Manager", font=("Arial", 35, 'bold'))
+add_password_title.grid(row=0, column=1, padx=20, pady=20)
+
+add_password_text = customtkinter.CTkLabel(add_password_frame, text="Add Password", font=("Arial", 30, 'bold'))
+add_password_text.grid(row=1, column=1, padx=20, pady=10)
+
+service_entry = customtkinter.CTkEntry(add_password_frame, width=300, height=35, font=("Arial", 18))
+service_entry.grid(row=2, column=1, padx=20, pady=10, sticky='w')
+service_label = customtkinter.CTkLabel(add_password_frame, text="Service", font=("Arial", 20))
+service_label.grid(row=2, column=0, padx=20, pady=10, sticky='e')
+
+service_username_entry = customtkinter.CTkEntry(add_password_frame, width=300, height=35, font=("Arial", 18))
+service_username_entry.grid(row=3, column=1, padx=20, pady=10, sticky='w')
+service_username_label = customtkinter.CTkLabel(add_password_frame, text="Service Username", font=("Arial", 20))
+service_username_label.grid(row=3, column=0, padx=20, pady=10, sticky='e')
+
+password_entry = customtkinter.CTkEntry(add_password_frame, width=300, height=35, font=("Arial", 18))
+password_entry.grid(row=4, column=1, padx=20, pady=10, sticky='w')
+password_label = customtkinter.CTkLabel(add_password_frame, text="Password", font=("Arial", 20))
+password_label.grid(row=4, column=0, padx=20, pady=10, sticky='e')
+
+category_entry = customtkinter.CTkEntry(add_password_frame, width=300, height=35, font=("Arial", 18))
+category_entry.grid(row=5, column=1, padx=20, pady=10, sticky='w')
+category_label = customtkinter.CTkLabel(add_password_frame, text="Category", font=("Arial", 20))
+category_label.grid(row=5, column=0, padx=20, pady=10, sticky='e')
+back_button=customtkinter.CTkButton(add_password_frame,text="Back",font=("Arial",20),width=200,height=40,command=lambda: show_frame(display_passwords_frame))
+back_button.grid(row=0, column=2,padx=20,pady=20)
 add_password_message = customtkinter.CTkLabel(add_password_frame, text="", font=("Arial", 20))
-add_password_message.grid(row=5, column=1, padx=20, pady=10)
+add_password_message.grid(row=6, column=1, padx=20, pady=10)
+
 def add_password():
-    global current_user_key, current_username
+    service = service_entry.get()
+    service_username = service_username_entry.get()
+    password = password_entry.get()
+    category = category_entry.get()
     
-    category = category_entry_signup.get()
-    service = service_entry_signup.get()
-    password = addpassword_entry_signup.get()
+    passwords_dict = retrieve_passwords(current_username)
+    passwords_dict[service] = {
+        'username': service_username,
+        'password': password,
+        'category': category
+    }
+    store_passwords(current_username, passwords_dict)
     
-    if not category or not service or not password:
-        add_password_message.configure(text="All fields are required!", text_color="red")
-        return
-    
-    
-    conn = create_connection(current_user_key)
-    c = conn.cursor()
-    
-    c.execute("INSERT INTO passwords (username, category, service, password) VALUES (?, ?, ?, ?)", 
-              (current_username, category, service, password))
-    conn.commit()
-    conn.close()
-    
-    category_entry_signup.delete(0, tkinter.END)
-    service_entry_signup.delete(0, tkinter.END)
-    addpassword_entry_signup.delete(0, tkinter.END)
     add_password_message.configure(text="Password added successfully!", text_color="green")
-add_button=customtkinter.CTkButton(add_password_frame,text="Add",font=("Arial",20),command=add_password)
-add_button.grid(row=6,column=2,padx=20,pady=20)
+    display_passwords()
+
+add_password_button = customtkinter.CTkButton(add_password_frame, text="Add Password", font=("Arial", 20), width=200, height=40, command=add_password)
+add_password_button.grid(row=7, column=1, padx=20, pady=20)
+
+for i in range(6):
+    display_passwords_frame.grid_rowconfigure(i, weight=1)
+display_passwords_frame.grid_columnconfigure(0, weight=1)
+
+show_frame(choice_frame)
 app.mainloop()
