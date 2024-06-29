@@ -12,6 +12,7 @@ from tkinter import ttk
 current_user_key = None
 current_username = None
 
+
 customtkinter.set_appearance_mode("dark")
 customtkinter.set_default_color_theme("blue")
 
@@ -229,19 +230,18 @@ add_button=customtkinter.CTkButton(display_passwords_frame,text="Add",font=("Ari
 add_button.grid(row=0, column=2,padx=20,pady=20)
 
 columns = ("Service", "Username", "Password")
-password_tree = ttk.Treeview(display_passwords_frame, columns=columns, show="headings", height=15)
+password_tree = ttk.Treeview(display_passwords_frame, columns=columns, show="headings", height=30)
 password_tree.heading("Service", text="Service")
 password_tree.heading("Username", text="Username")
 password_tree.heading("Password", text="Password")
 
-password_tree.column("Service", width=200, anchor='center')
-password_tree.column("Username", width=200, anchor='center')
-password_tree.column("Password", width=200, anchor='center')
+password_tree.column("Service", width=300, anchor='center')
+password_tree.column("Username", width=300, anchor='center')
+password_tree.column("Password", width=300, anchor='center')
 
 password_tree.grid(row=2, column=0, padx=20, pady=10, sticky='n')
 
 scrollbar = ttk.Scrollbar(display_passwords_frame, orient="vertical", command=password_tree.yview)
-scrollbar.grid(row=2, column=1, sticky='ns')
 password_tree.configure(yscrollcommand=scrollbar.set)
 
 def display_passwords():
@@ -250,6 +250,17 @@ def display_passwords():
     passwords_dict = retrieve_passwords(current_username)
     for service, details in passwords_dict.items():
         password_tree.insert("", "end", values=(service, details['username'], details['password']))
+def generator():
+    letters = string.ascii_letters
+    digits = string.digits
+    special_chars = string.punctuation
+    selection_list = letters + digits + special_chars
+    password_len = 17
+    password = ''
+    for i in range(password_len):
+        password+=''.join(secrets.choice(selection_list))
+    password_entry.delete(0, tkinter.END)
+    password_entry.insert(0,password)
 
 add_password_frame.grid_rowconfigure(0, weight=1)
 add_password_frame.grid_rowconfigure(1, weight=1)
@@ -282,7 +293,8 @@ password_entry = customtkinter.CTkEntry(add_password_frame, width=300, height=35
 password_entry.grid(row=4, column=1, padx=20, pady=10, sticky='w')
 password_label = customtkinter.CTkLabel(add_password_frame, text="Password", font=("Arial", 20))
 password_label.grid(row=4, column=0, padx=20, pady=10, sticky='e')
-
+generator_button=customtkinter.CTkButton(add_password_frame,text="generate",font=("Arial",18),command=generator)
+generator_button.grid(row=4,column=2,padx=20,pady=20)
 category_entry = customtkinter.CTkEntry(add_password_frame, width=300, height=35, font=("Arial", 18))
 category_entry.grid(row=5, column=1, padx=20, pady=10, sticky='w')
 category_label = customtkinter.CTkLabel(add_password_frame, text="Category", font=("Arial", 20))
